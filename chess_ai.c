@@ -39,11 +39,8 @@ typedef struct {
 } Move;
 
 Move best_root_move; 
-Move prev_best_move; // NEW: Tracks the best move from the previous depth iteration
+Move prev_best_move; 
 
-// =========================================================
-// TRANSPOSITION TABLE & ZOBRIST HASHING
-// =========================================================
 #define TT_SIZE 32768
 #define TT_MASK 0x7FFF 
 #define TT_EXACT 0
@@ -90,9 +87,6 @@ void compute_initial_hash() {
     }
 }
 
-// =========================================================
-// PARSERS
-// =========================================================
 void move_to_string(Move m, char* str) {
     str[0] = (m.from_sq % 8) + 'a'; str[1] = (m.from_sq / 8) + '1';
     str[2] = (m.to_sq % 8) + 'a';   str[3] = (m.to_sq / 8) + '1';
@@ -239,7 +233,6 @@ void sort_moves(Move* move_list, int count) {
     }
 }
 
-// NEW: Added is_root flag so we know when to boost the PV move
 int generate_all_moves(int is_white, Move* move_list, bool is_root) {
     int count = 0; int start = is_white ? 0 : 6; int end = is_white ? 5 : 11;
     for (int op = start; op <= end; op++) {
@@ -264,9 +257,6 @@ int generate_all_moves(int is_white, Move* move_list, bool is_root) {
                 if (cap_op != -1) move_score = 10000 + weights[cap_op] - (weights[op] / 10);
                 if (prom_op != -1) move_score += 9000;
 
-                // --- THE ITERATIVE DEEPENING BOOST ---
-                // If this move is the absolute best move from the previous iteration, 
-                // give it a massive score so it gets sorted to the #1 spot.
                 if (is_root && op == prev_best_move.piece_opcode && from_sq == prev_best_move.from_sq && to_sq == prev_best_move.to_sq) {
                     move_score += 1000000; 
                 }
@@ -326,7 +316,29 @@ int minimax(int depth, int alpha, int beta, int is_white, bool is_root) {
             continue; 
         }
 
-        int eval = -minimax(depth - 1, -beta, -alpha, !is_white, false);
+        int eval;
+
+        // =========================================================
+        // NEW: LATE MOVE REDUCTIONS (LMR) - Cancel Bad Moves Early
+        // =========================================================
+        // Condition: If we are deep enough (depth >= 3), it's not the root node,
+        // and we've already checked the 4 best moves (i >= 4), AND this is a quiet 
+        // move (no captures/promotions), we reduce the depth!
+        if (depth >= 3 && !is_root && i >= 4 && move_list[i].captured_piece == -1 && move_list[i].promotion_opcode == -1) {
+            int reduction = (i > 10) ? 2 : 1; // Punish moves way down the list even harder
+            
+            // Shallow search
+            eval = -minimax(depth - 1 - reduction, -beta, -alpha, !is_white, false);
+            
+            // Wait, was this move actually brilliant? Do a full Re-Search!
+            if (eval > alpha) {
+                eval = -minimax(depth - 1, -beta, -alpha, !is_white, false);
+            }
+        } else {
+            // Normal full-depth search for captures, promotions, and top 4 moves
+            eval = -minimax(depth - 1, -beta, -alpha, !is_white, false);
+        }
+
         unmake_move(move_list[i]);
 
         if (!found_legal_move || eval > best_eval) {
@@ -374,15 +386,11 @@ int main() {
         }
 
         int dynamic_depth;
-        // Bumped depth to 8 for the opening as requested
-        if (piece_count <= 6) dynamic_depth = 12;
-        else if (piece_count <= 12) dynamic_depth = 10;
-        else if (piece_count <= 26) dynamic_depth = 8;
-        else dynamic_depth = 6;
+        if (piece_count <= 6) dynamic_depth = 12; 
+        else if (piece_count <= 12) dynamic_depth = 10;  
+        else dynamic_depth = 8;  
 
         int best_score = 0;
-        
-        // Reset the previous best move before starting the new iterative loop
         prev_best_move.piece_opcode = -1;
         prev_best_move.from_sq = 0;
         prev_best_move.to_sq = 0;
@@ -390,13 +398,11 @@ int main() {
         printf("DEBUG: Starting Iterative Deepening to Depth %d...\n", dynamic_depth);
         fflush(stdout);
 
-        // --- THE ITERATIVE DEEPENING LOOP ---
         for (int d = 1; d <= dynamic_depth; d++) {
-            best_root_move.from_sq = 0; best_root_move.to_sq = 0; // Clear it for the new depth run
+            best_root_move.from_sq = 0; best_root_move.to_sq = 0; 
             
             best_score = minimax(d, -999999, 999999, 0, true); 
             
-            // Save the best move found at this depth to use as priority in the next loop
             if (best_root_move.from_sq != best_root_move.to_sq) {
                 prev_best_move = best_root_move;
             }
@@ -404,11 +410,9 @@ int main() {
             printf("DEBUG: \tFinished Depth %d | Score: %d\n", d, best_score);
             fflush(stdout);
 
-            // If we found a forced mate, there is no need to keep digging. Break out early.
             if (best_score >= 15000 || best_score <= -15000) break;
         }
 
-        // Ensure the absolute best move found across all iterations is the one we play
         best_root_move = prev_best_move;
 
         printf("SCORE:%d\n", best_score);
